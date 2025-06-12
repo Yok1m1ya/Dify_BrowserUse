@@ -1,0 +1,15 @@
+identity:
+  author: yok1m1ya
+  name: dify_browseruse
+  label:
+    en_US: dify_browseruse
+    zh_Hans: dify_browseruse
+  description:
+    en_US: A tool for executing Browser-Use plugins to automate website operations
+    zh_Hans: 一个用于执行Browser-Use插件自动化操作网页的工具
+  icon: icon.svg
+tools:
+  - tools/dify_browseruse.yaml
+extra:
+  python:
+    source: provider/dify_browseruse.py

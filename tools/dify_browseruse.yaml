@@ -1,0 +1,26 @@
+identity:
+  name: dify_browseruse
+  author: yok1m1ya
+  label:
+    en_US: dify_browseruse
+    zh_Hans: dify_browseruse
+description:
+  human:
+    en_US: A tool for executing Browser-Use plugins to automate web page operations. The input should be a search query
+    zh_Hans: 一个用于执行Browser-Use插件自动化操作网页的工具。输入应该是一个搜索查询
+  llm: A tool for executing Browser-Use plugins to automate web page operations. The input should be a search query
+parameters:
+  - name: query
+    type: string
+    required: true
+    label:
+      en_US: Natural language commands
+      zh_Hans: 自然语言指令，如：在"bing.com搜索北京天气"
+    human_description:
+      en_US: Used to issue operation instructions
+      zh_Hans: 用于下达操作指令
+    llm_description: Key words for operation instructions
+    form: llm
+extra:
+  python:
+    source: tools/dify_browseruse.py
