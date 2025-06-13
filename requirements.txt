@@ -1,4 +1,0 @@
-dify_plugin>=0.2.0,<0.3.0
-
-dify_plugin~=0.2.4
-langchain-openai~=0.3.11
