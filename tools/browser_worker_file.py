@@ -3,7 +3,7 @@
 """
 browser_worker_file.py - 基于文件通信的Browser-Use执行脚本
 通过文件进行输入输出，完全避免stdout/stderr的编码问题
-基于稳定版本，只添加Docker环境必要的适配
+简化版 - 去除浏览器验证和安装部分
 """
 
 import asyncio
@@ -11,7 +11,6 @@ import sys
 import json
 import os
 import traceback
-import subprocess
 from pathlib import Path
 
 # 设置UTF-8编码
@@ -21,58 +20,17 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 current_dir = Path(__file__).parent
 sys.path.insert(0, str(current_dir))
 
-
-# Docker环境检查和Playwright浏览器安装
-def ensure_playwright_browser():
-    """确保Playwright浏览器在Docker环境中可用"""
-    try:
-        # 检查Playwright是否已安装
-        import playwright
-        print("✅ Playwright已安装")
-
-        # 检查浏览器是否存在
-        browser_path = "/root/.cache/ms-playwright/chromium-1169/chrome-linux/chrome"
-        if not os.path.exists(browser_path):
-            print("🔧 Playwright浏览器不存在，正在安装...")
-
-            # 静默安装浏览器
-            try:
-                result = subprocess.run([
-                    sys.executable, '-m', 'playwright', 'install', 'chromium'
-                ], capture_output=True, text=True, timeout=120)
-
-                if result.returncode == 0:
-                    print("✅ Playwright浏览器安装成功")
-                else:
-                    print(f"⚠️ 浏览器安装警告: {result.stderr}")
-
-            except subprocess.TimeoutExpired:
-                print("⚠️ 浏览器安装超时，将尝试使用现有配置")
-            except Exception as e:
-                print(f"⚠️ 浏览器安装失败: {e}")
-
-        else:
-            print("✅ Playwright浏览器已存在")
-
-    except ImportError:
-        print("❌ Playwright未安装")
-        return False
-    except Exception as e:
-        print(f"⚠️ 浏览器检查失败: {e}")
-
-    return True
-
-
-# 确保浏览器可用（只在Docker环境中执行）
-if os.path.exists("/.dockerenv"):  # 检查是否在Docker容器中
-    print("🐳 检测到Docker环境，初始化浏览器...")
-    ensure_playwright_browser()
+# 禁用遥测
+os.environ["ANONYMIZED_TELEMETRY"] = "false"
 
 try:
     from browser_use import Agent, BrowserSession
     from langchain_openai import ChatOpenAI
+
+    print("✅ 成功导入browser_use和langchain_openai")
 except ImportError as e:
     # 如果导入失败，写入错误到输出文件
+    print(f"❌ 导入模块失败: {str(e)}")
     if len(sys.argv) >= 3:
         output_file = Path(sys.argv[2])
         error_result = {
@@ -84,12 +42,10 @@ except ImportError as e:
         try:
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(error_result, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+            print(f"✅ 错误信息已写入: {output_file}")
+        except Exception as write_error:
+            print(f"❌ 写入错误文件失败: {write_error}")
     sys.exit(1)
-
-# 禁用遥测
-os.environ["ANONYMIZED_TELEMETRY"] = "false"
 
 
 async def execute_browser_task(query: str, task_id: str) -> dict:
@@ -102,18 +58,27 @@ async def execute_browser_task(query: str, task_id: str) -> dict:
         print(f"📋 任务内容: {query}")
 
         # 初始化LLM
-        llm = ChatOpenAI(
-            model="DeepSeek-R1-32B-FP8",
-            openai_api_base="http://10.7.202.237:25010/v1",
-            timeout=30,
-            max_retries=3,
-        )
-        print("✅ LLM初始化完成")
+        try:
+            llm = ChatOpenAI(
+                model="DeepSeek",
+                openai_api_base="http://10.4.35.64:31111/v1",
+                timeout=30,
+                max_retries=3,
+            )
+            print("✅ LLM初始化完成")
+        except Exception as llm_error:
+            print(f"❌ LLM初始化失败: {llm_error}")
+            return {
+                "success": False,
+                "task": query,
+                "result": "",
+                "error": f"LLM初始化失败: {str(llm_error)}"
+            }
 
-        # 浏览器启动参数 - Docker环境优化
+        # Docker环境必需的浏览器启动参数
         browser_args = [
-            '--no-sandbox',  # Docker必需
-            '--disable-setuid-sandbox',  # Docker必需
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
             '--disable-gpu',
             '--ignore-certificate-errors',
@@ -155,31 +120,43 @@ async def execute_browser_task(query: str, task_id: str) -> dict:
             '--disable-accelerated-video-decode',
             '--num-raster-threads=1',
             '--max_old_space_size=1024',
+            '--single-process',
+            '--no-zygote',
+            '--memory-pressure-off'
         ]
 
-        # 如果在Docker环境中，添加额外的稳定性参数
-        if os.path.exists("/.dockerenv"):
-            browser_args.extend([
-                '--single-process',  # Docker环境单进程模式更稳定
-                '--no-zygote',
-                '--memory-pressure-off'
-            ])
+        try:
+            # 初始化浏览器会话
+            print("🔧 开始初始化浏览器会话...")
+            browser_session = BrowserSession(
+                headless=True,
+                viewport={'width': 1280, 'height': 720},
+                context_options={
+                    "ignoreHTTPSErrors": True,
+                    "acceptDownloads": True,
+                    "bypassCSP": True,
+                },
+                keep_alive=True,
+                args=browser_args
+            )
+            print("✅ 浏览器会话配置完成")
 
-        # 初始化浏览器会话（保持原有配置，只修改args）
-        browser_session = BrowserSession(
-            headless=True,  # 强制使用headless模式
-            viewport={'width': 1280, 'height': 720},
-            context_options={
-                "ignoreHTTPSErrors": True,
-                "acceptDownloads": True,
-                "bypassCSP": True,
-            },
-            keep_alive=True,
-            args=browser_args  # 使用优化后的参数
-        )
-        print("✅ 浏览器会话配置完成")
+            print("🚀 启动浏览器会话...")
+            await browser_session.start()
+            print("✅ 浏览器会话启动成功")
 
-        # 系统消息配置（保持原有内容）
+        except Exception as browser_start_error:
+            error_msg = f"浏览器启动失败: {str(browser_start_error)}"
+            print(f"❌ {error_msg}")
+            print(f"📋 详细错误: {traceback.format_exc()}")
+            return {
+                "success": False,
+                "task": query,
+                "result": "",
+                "error": error_msg
+            }
+
+        # 系统消息配置
         extend_system_message = """
         记住最重要的规则:
         1. 永远不要自动填入任何登录信息，除非用户提供了账户名及密码。
@@ -200,27 +177,41 @@ async def execute_browser_task(query: str, task_id: str) -> dict:
         5. 如果页面加载缓慢，等待最多10秒后继续。
         """
 
-        print("🚀 启动浏览器会话...")
-        await browser_session.start()
-        print("✅ 浏览器会话启动成功")
+        # 创建Browser-Use Agent
+        try:
+            print("🤖 创建Agent...")
+            agent = Agent(
+                task=query,
+                llm=llm,
+                use_vision=False,
+                browser_session=browser_session,
+                extend_system_message=extend_system_message,
+                extend_planner_system_message=extend_planner_system_message
+            )
+            print("✅ Agent创建完成")
+        except Exception as agent_error:
+            print(f"❌ Agent创建失败: {agent_error}")
+            return {
+                "success": False,
+                "task": query,
+                "result": "",
+                "error": f"Agent创建失败: {str(agent_error)}"
+            }
 
-        # 创建Browser-Use Agent（保持原有配置）
-        print("🤖 创建Agent...")
-        agent = Agent(
-            task=query,
-            llm=llm,
-            use_vision=False,
-            browser_session=browser_session,
-            extend_system_message=extend_system_message,
-            extend_planner_system_message=extend_planner_system_message
-        )
-        print("✅ Agent创建完成")
+        try:
+            print("🎯 开始执行任务...")
+            history = await agent.run()
+            print("✅ 任务执行完成")
+        except Exception as run_error:
+            print(f"❌ 任务执行失败: {run_error}")
+            return {
+                "success": False,
+                "task": query,
+                "result": "",
+                "error": f"任务执行失败: {str(run_error)}"
+            }
 
-        print("🎯 开始执行任务...")
-        history = await agent.run()
-        print("✅ 任务执行完成")
-
-        # 获取最终结果（保持原有逻辑）
+        # 获取最终结果
         final_result = history.final_result()
         print(f"📋 获取到final_result: {bool(final_result)}")
 
@@ -276,7 +267,7 @@ async def execute_browser_task(query: str, task_id: str) -> dict:
         }
 
     finally:
-        # 确保浏览器会话被正确关闭（保持原有逻辑）
+        # 确保浏览器会话被正确关闭
         print("🧹 开始清理资源...")
         try:
             if agent and hasattr(agent, 'browser_session') and agent.browser_session:
@@ -290,32 +281,45 @@ async def execute_browser_task(query: str, task_id: str) -> dict:
 
 
 def main():
-    """主函数（保持原有逻辑）"""
+    """主函数"""
+    print("🚀 开始执行main函数...")
+
     if len(sys.argv) != 3:
+        print("❌ 参数错误")
         print("使用方法: python browser_worker_file.py <input_file> <output_file>")
         sys.exit(1)
 
     input_file = Path(sys.argv[1])
     output_file = Path(sys.argv[2])
 
+    print(f"📁 输入文件: {input_file}")
+    print(f"📁 输出文件: {output_file}")
+
     try:
         # 读取任务文件
         if not input_file.exists():
             raise FileNotFoundError(f"输入文件不存在: {input_file}")
 
+        print("📖 读取任务文件...")
         with open(input_file, 'r', encoding='utf-8') as f:
             task_data = json.load(f)
 
         query = task_data.get('query', '')
         task_id = task_data.get('task_id', 'unknown')
 
+        print(f"📋 任务ID: {task_id}")
+        print(f"📋 查询内容: {query}")
+
         if not query:
             raise ValueError("任务查询内容为空")
 
         # 执行任务
+        print("🎯 开始执行异步任务...")
         result = asyncio.run(execute_browser_task(query, task_id))
+        print(f"✅ 任务执行完成，结果: {result}")
 
         # 写入结果文件
+        print(f"💾 写入结果到: {output_file}")
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
 
@@ -348,10 +352,14 @@ def main():
         try:
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(error_result, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+            print(f"✅ 错误信息已写入: {output_file}")
+        except Exception as write_error:
+            print(f"❌ 写入错误文件失败: {write_error}")
         sys.exit(1)
 
 
 if __name__ == "__main__":
+    print("=" * 50)
+    print("🎬 Browser Worker 启动")
+    print("=" * 50)
     main()
